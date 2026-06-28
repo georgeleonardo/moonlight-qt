@@ -349,6 +349,72 @@ function hasCompleteMoonlightLogEvidence(log, variant) {
          hasNoMoonlightStopEvidence(log);
 }
 
+function moonlightLogEvidenceStatus(log, variantKey) {
+  const variant = moonlightEvidenceVariants[variantKey];
+  const detection = hasDetectionEvidence(log, variant);
+  const mapping = hasMappingEvidence(log);
+  const arrival = hasArrivalEvidence(log, variant);
+  const perButton = hasPerButtonEvidence(log);
+  const noStop = hasNoMoonlightStopEvidence(log);
+
+  return {
+    variantKey,
+    label: variant.label,
+    detection,
+    mapping,
+    arrival,
+    perButton,
+    noStop,
+    complete: detection && mapping && arrival && perButton && noStop,
+  };
+}
+
+function moonlightLogEvidenceReport(log) {
+  const variants = moonlightEvidenceVariantOrder.map((variantKey) => moonlightLogEvidenceStatus(log, variantKey));
+  const completeVariants = variants.filter((variant) => variant.complete);
+
+  return {
+    pass: completeVariants.length === 1,
+    completeVariants,
+    variants,
+  };
+}
+
+function passFail(value) {
+  return value ? 'PASS' : 'FAIL';
+}
+
+function formatMoonlightLogEvidenceReport(report, logPath) {
+  const lines = [
+    `Moonlight DualSense Edge evidence: ${passFail(report.pass)}`,
+    `log=${logPath}`,
+    `complete_runtime_variants=${report.completeVariants.length}`,
+  ];
+
+  if (report.pass) {
+    lines.push(`runtime_variant=${report.completeVariants[0].label}`);
+  }
+  else if (report.completeVariants.length > 1) {
+    lines.push('reason=more than one runtime variant is complete in the same log');
+  }
+  else {
+    lines.push('reason=no complete runtime variant found in the log');
+  }
+
+  for (const variant of report.variants) {
+    lines.push('');
+    lines.push(`[${variant.label}]`);
+    lines.push(`detection=${passFail(variant.detection)}`);
+    lines.push(`mapping=${passFail(variant.mapping)}`);
+    lines.push(`arrival=${passFail(variant.arrival)}`);
+    lines.push(`per_button=${passFail(variant.perButton)}`);
+    lines.push(`stop_diagnostics_absent=${passFail(variant.noStop)}`);
+    lines.push(`complete=${passFail(variant.complete)}`);
+  }
+
+  return lines.join('\n') + '\n';
+}
+
 function makeCompleteMoonlightLog(variant) {
   const runtimeSummary = variant.rawMappingName === 'SDL2' ? 'SDL 2.30.9' : 'SDL 2.32.70, SDL3 3.4.11';
   const rawMappingSignal = variant.rawMappingName === 'SDL2' ? 'native SDL2 runtime' : 'SDL3_VERSION';
@@ -406,6 +472,7 @@ function makeMoonlightEvidenceVariantSection(variantKey) {
     '```text',
     exampleLines[2],
     '```',
+    '',
   ].join('\n');
 }
 
@@ -447,10 +514,15 @@ function makeMoonlightEvidenceTemplate() {
     '$env:SDL_LOGGING = "application=debug"; .\\Moonlight.exe',
     '```',
     '',
+    'After capture, verify one complete Moonlight log:',
+    '',
+    '```sh',
+    'node scripts/verify-dualsense-edge-mapping.js --verify-log /path/to/Moonlight.log',
+    '```',
+    '',
     'Evidence is ready only when exactly one runtime variant below is fully satisfied, every one-at-a-time press/release line is present, and none of the stop diagnostics are present.',
     '',
     ...moonlightEvidenceVariantOrder.map(makeMoonlightEvidenceVariantSection),
-    '',
     makeMoonlightPhysicalPressSection(),
     '',
     '## Stop diagnostics',
@@ -469,6 +541,7 @@ function makeMoonlightEvidenceTemplate() {
     '- Host build/commit:',
     '- Controller: DualSense Edge VID/PID 0x054c/0x0df2',
     '- Runtime variant satisfied: native SDL2 or sdl2-compat/SDL3',
+    '- `node scripts/verify-dualsense-edge-mapping.js --verify-log <Moonlight.log>`: PASS',
     '- One-at-a-time PADDLE1/PADDLE2/PADDLE3/PADDLE4 evidence: present',
     '- Stop diagnostics listed above: absent',
     '',
@@ -484,6 +557,8 @@ function usage() {
     'Usage: node scripts/verify-dualsense-edge-mapping.js [options]',
     '',
     'Options:',
+    '  --verify-log <path>                   Verify one Moonlight client log for complete Edge evidence.',
+    '  --verify-log=<path>                   Same as above.',
     '  --print-evidence-template              Print a Moonlight client evidence template after verification.',
     '  --write-evidence-template <path>       Write the evidence template to <path> after verification.',
     '  --write-evidence-template=<path>       Same as above.',
@@ -495,6 +570,7 @@ function parseCliOptions(argv) {
   const options = {
     help: false,
     printEvidenceTemplate: false,
+    verifyLogPath: null,
     writeEvidenceTemplatePath: null,
   };
 
@@ -505,6 +581,20 @@ function parseCliOptions(argv) {
     }
     else if (arg === '--print-evidence-template') {
       options.printEvidenceTemplate = true;
+    }
+    else if (arg === '--verify-log') {
+      i++;
+      if (i >= argv.length || argv[i].startsWith('--')) {
+        fail('--verify-log requires a log path');
+      }
+      options.verifyLogPath = argv[i];
+    }
+    else if (arg.startsWith('--verify-log=')) {
+      const logPath = arg.slice('--verify-log='.length);
+      if (!logPath) {
+        fail('--verify-log requires a log path');
+      }
+      options.verifyLogPath = logPath;
     }
     else if (arg === '--write-evidence-template') {
       i++;
@@ -610,13 +700,46 @@ assert(sunshineButtonFlags2(0x2f0000) === 0x002f, 'Edge paddle/Fn, touchpad, and
 
 const completeSdl2MoonlightLog = makeCompleteMoonlightLog(moonlightEvidenceVariants.sdl2);
 const completeSdl3MoonlightLog = makeCompleteMoonlightLog(moonlightEvidenceVariants.sdl3Compat);
+const completeSdl3FallbackMoonlightLog = completeSdl3MoonlightLog.replace(
+  '(SDL 2.32.70, SDL3 3.4.11) (raw mapping signal: SDL3_VERSION)',
+  '(SDL 2.32.70) (raw mapping signal: sdl2-compat runtime version)'
+);
 assertMoonlightLogEvidence(completeSdl2MoonlightLog, moonlightEvidenceVariants.sdl2, true, 'native SDL2 same-log evidence passes');
 assertMoonlightLogEvidence(completeSdl3MoonlightLog, moonlightEvidenceVariants.sdl3Compat, true, 'sdl2-compat/SDL3 same-log evidence passes');
+assert(
+  moonlightLogEvidenceReport(completeSdl2MoonlightLog).pass,
+  'native SDL2 evidence report must pass'
+);
+assert(
+  moonlightLogEvidenceReport(completeSdl2MoonlightLog).completeVariants[0].variantKey === 'sdl2',
+  'native SDL2 evidence report must select native SDL2'
+);
+assert(
+  moonlightLogEvidenceReport(completeSdl3MoonlightLog).pass,
+  'sdl2-compat/SDL3 evidence report must pass'
+);
+assert(
+  moonlightLogEvidenceReport(completeSdl3MoonlightLog).completeVariants[0].variantKey === 'sdl3Compat',
+  'sdl2-compat/SDL3 evidence report must select sdl2-compat/SDL3'
+);
+assert(
+  moonlightLogEvidenceReport(completeSdl3FallbackMoonlightLog).pass,
+  'sdl2-compat runtime-version fallback evidence report must pass'
+);
+assert(
+  moonlightLogEvidenceReport(completeSdl3FallbackMoonlightLog).completeVariants[0].variantKey === 'sdl3Compat',
+  'sdl2-compat runtime-version fallback evidence report must select sdl2-compat/SDL3'
+);
+assert(
+  !moonlightLogEvidenceReport(`${completeSdl2MoonlightLog}\n${completeSdl3MoonlightLog}`).pass,
+  'mixed runtime evidence in one copied log must fail'
+);
+assert(
+  !moonlightLogEvidenceReport(completeSdl2MoonlightLog.split('\n').slice(0, 2).join('\n')).pass,
+  'partial copied Moonlight evidence report must fail'
+);
 assertMoonlightLogEvidence(
-  completeSdl3MoonlightLog.replace(
-    '(SDL 2.32.70, SDL3 3.4.11) (raw mapping signal: SDL3_VERSION)',
-    '(SDL 2.32.70) (raw mapping signal: sdl2-compat runtime version)'
-  ),
+  completeSdl3FallbackMoonlightLog,
   moonlightEvidenceVariants.sdl3Compat,
   true,
   'sdl2-compat runtime-version signal satisfies SDL3-compatible log evidence without SDL3_VERSION'
@@ -757,6 +880,10 @@ assert(
   'Moonlight evidence template must include SDL application debug logging instructions'
 );
 assert(
+  moonlightEvidenceTemplate.includes('--verify-log'),
+  'Moonlight evidence template must include the machine-checkable log verifier command'
+);
+assert(
   moonlightEvidenceTemplate.includes('### Moonlight client evidence'),
   'Moonlight evidence template must include a paste-ready PR evidence block'
 );
@@ -815,6 +942,20 @@ if (cliOptions.writeEvidenceTemplatePath) {
 if (cliOptions.printEvidenceTemplate) {
   process.stdout.write(moonlightEvidenceTemplate);
 }
-else {
+
+if (cliOptions.verifyLogPath) {
+  const logPath = path.resolve(process.cwd(), cliOptions.verifyLogPath);
+  if (!fs.existsSync(logPath)) {
+    fail(`--verify-log path does not exist: ${logPath}`);
+  }
+  const log = fs.readFileSync(logPath, 'utf8');
+  const report = moonlightLogEvidenceReport(log);
+  process.stdout.write(formatMoonlightLogEvidenceReport(report, logPath));
+  if (!report.pass) {
+    process.exit(1);
+  }
+}
+
+if (!cliOptions.printEvidenceTemplate && !cliOptions.verifyLogPath) {
   console.log('DualSense Edge mapping verification passed.');
 }
