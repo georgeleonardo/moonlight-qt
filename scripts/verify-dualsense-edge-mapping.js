@@ -232,6 +232,17 @@ const moonlightEvidenceVariants = {
   },
 };
 
+const moonlightEvidenceVariantOrder = ['sdl2', 'sdl3Compat'];
+const moonlightStopEvidenceSamples = [
+  'DualSense Edge paddle mappings are present, but SDL did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
+  'DualSense Edge paddle mapping update did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
+  'DualSense Edge paddle mapping add did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
+  'Ignoring DualSense Edge PADDLE1 event without verified paddle bindings',
+  'Ignoring DualSense Edge controller button a bound to raw paddle1:b20 as stale Edge raw alias',
+  'DualSense Edge controller button a is bound to raw paddle1:b20; not advertising it as a normal button',
+];
+const moonlightCombinedMaskSamples = ['0x00030000', '0x00050000', '0x00090000'];
+
 function hasDetectionEvidence(log, variant) {
   const detectionPattern = /DualSense Edge detected with (\d+) SDL joystick buttons \(need (\d+) for (SDL2|SDL3\/sdl2-compat) Edge raw mapping\) \(VID\/PID: 0x054c\/0x0df2\) \((SDL \d+\.\d+\.\d+(?:, SDL3 \d+\.\d+\.\d+)?)\) \(raw mapping signal: ([^)]+)\)/g;
   let match;
@@ -357,6 +368,166 @@ function makeCompleteMoonlightLog(variant) {
   ].join('\n');
 }
 
+function makeSdl3CompatFallbackDetectionLine() {
+  return makeCompleteMoonlightLog(moonlightEvidenceVariants.sdl3Compat)
+    .split('\n')[0]
+    .replace(
+      '(SDL 2.32.70, SDL3 3.4.11) (raw mapping signal: SDL3_VERSION)',
+      '(SDL 2.32.70) (raw mapping signal: sdl2-compat runtime version)'
+    );
+}
+
+function makeMoonlightEvidenceVariantSection(variantKey) {
+  const variant = moonlightEvidenceVariants[variantKey];
+  const exampleLines = makeCompleteMoonlightLog(variant).split('\n');
+  const detectionLines = [exampleLines[0]];
+  if (variantKey === 'sdl3Compat') {
+    detectionLines.push(makeSdl3CompatFallbackDetectionLine());
+  }
+
+  return [
+    `## ${variant.label} runtime`,
+    '',
+    `Minimum SDL joystick buttons: ${variant.minButtons}`,
+    `Expected binding summary: ${variant.bindings}`,
+    '',
+    'Required detection line, or one of the accepted alternatives:',
+    '```text',
+    ...detectionLines,
+    '```',
+    '',
+    'Required mapping evidence:',
+    '```text',
+    exampleLines[1],
+    'DualSense Edge paddle mappings already present',
+    '```',
+    '',
+    'Required arrival support evidence:',
+    '```text',
+    exampleLines[2],
+    '```',
+  ].join('\n');
+}
+
+function makeMoonlightPhysicalPressSection() {
+  const physicalPressOrder = [
+    ['PADDLE1 / right rear', '0x00010000'],
+    ['PADDLE2 / left rear', '0x00020000'],
+    ['PADDLE3 / right Fn', '0x00040000'],
+    ['PADDLE4 / left Fn', '0x00080000'],
+  ];
+  const perButtonLines = makeCompleteMoonlightLog(moonlightEvidenceVariants.sdl2).split('\n').slice(3);
+
+  return [
+    '## One-at-a-time physical presses',
+    '',
+    'Press and release each Edge control by itself, in this order:',
+    ...physicalPressOrder.map(([name, mask], index) => `${index + 1}. ${name}: expect ${mask}`),
+    '',
+    'Required press/release evidence:',
+    '```text',
+    ...perButtonLines,
+    '```',
+    '',
+    `Do not accept combined one-at-a-time masks such as ${moonlightCombinedMaskSamples.join(', ')}.`,
+  ].join('\n');
+}
+
+function makeMoonlightEvidenceTemplate() {
+  return [
+    '# DualSense Edge Moonlight Client Evidence',
+    '',
+    'Run Moonlight with application debug logging enabled, connect a physical DualSense Edge, and attach the full client log.',
+    '',
+    '```sh',
+    'SDL_LOGGING=application=debug ./moonlight-qt',
+    '```',
+    '',
+    '```powershell',
+    '$env:SDL_LOGGING = "application=debug"; .\\Moonlight.exe',
+    '```',
+    '',
+    'Evidence is ready only when exactly one runtime variant below is fully satisfied, every one-at-a-time press/release line is present, and none of the stop diagnostics are present.',
+    '',
+    ...moonlightEvidenceVariantOrder.map(makeMoonlightEvidenceVariantSection),
+    '',
+    makeMoonlightPhysicalPressSection(),
+    '',
+    '## Stop diagnostics',
+    '',
+    'If any of these appear in the same log, the client evidence is not ready:',
+    '```text',
+    ...moonlightStopEvidenceSamples,
+    '```',
+    '',
+    '## Paste-ready PR evidence block',
+    '',
+    '````markdown',
+    '### Moonlight client evidence',
+    '- Moonlight branch/commit:',
+    '- Client OS and SDL runtime:',
+    '- Host build/commit:',
+    '- Controller: DualSense Edge VID/PID 0x054c/0x0df2',
+    '- Runtime variant satisfied: native SDL2 or sdl2-compat/SDL3',
+    '- One-at-a-time PADDLE1/PADDLE2/PADDLE3/PADDLE4 evidence: present',
+    '- Stop diagnostics listed above: absent',
+    '',
+    '```text',
+    '<paste full Moonlight client evidence log excerpt here>',
+    '```',
+    '````',
+  ].join('\n') + '\n';
+}
+
+function usage() {
+  return [
+    'Usage: node scripts/verify-dualsense-edge-mapping.js [options]',
+    '',
+    'Options:',
+    '  --print-evidence-template              Print a Moonlight client evidence template after verification.',
+    '  --write-evidence-template <path>       Write the evidence template to <path> after verification.',
+    '  --write-evidence-template=<path>       Same as above.',
+    '  --help                                Show this help.',
+  ].join('\n');
+}
+
+function parseCliOptions(argv) {
+  const options = {
+    help: false,
+    printEvidenceTemplate: false,
+    writeEvidenceTemplatePath: null,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--help') {
+      options.help = true;
+    }
+    else if (arg === '--print-evidence-template') {
+      options.printEvidenceTemplate = true;
+    }
+    else if (arg === '--write-evidence-template') {
+      i++;
+      if (i >= argv.length || argv[i].startsWith('--')) {
+        fail('--write-evidence-template requires an output path');
+      }
+      options.writeEvidenceTemplatePath = argv[i];
+    }
+    else if (arg.startsWith('--write-evidence-template=')) {
+      const outputPath = arg.slice('--write-evidence-template='.length);
+      if (!outputPath) {
+        fail('--write-evidence-template requires an output path');
+      }
+      options.writeEvidenceTemplatePath = outputPath;
+    }
+    else {
+      fail(`unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
 function assertMoonlightLogEvidence(log, variant, expected, message) {
   const actual = hasCompleteMoonlightLogEvidence(log, variant);
   assert(actual === expected, `${message}: expected ${expected ? 'complete' : 'incomplete'} Moonlight log evidence`);
@@ -364,6 +535,12 @@ function assertMoonlightLogEvidence(log, variant, expected, message) {
 
 function withoutLogLine(log, line) {
   return log.replace(new RegExp(`^${escapeRegex(line)}\\n?`, 'm'), '');
+}
+
+const cliOptions = parseCliOptions(process.argv.slice(2));
+if (cliOptions.help) {
+  console.log(usage());
+  process.exit(0);
 }
 
 assertSource(/#define DUALSENSE_EDGE_SDL2_MIN_BUTTONS 21\b/, 'native SDL2 minimum Edge raw button count must stay at 21');
@@ -525,20 +702,13 @@ assertMoonlightLogEvidence(
 assertMoonlightLogEvidence(
   completeSdl2MoonlightLog.replace(
     'DualSense Edge PADDLE2 pressed (paddle/Fn flags: 0x00020000)',
-    'DualSense Edge PADDLE2 pressed (paddle/Fn flags: 0x00030000)'
+    `DualSense Edge PADDLE2 pressed (paddle/Fn flags: ${moonlightCombinedMaskSamples[0]})`
   ),
   moonlightEvidenceVariants.sdl2,
   false,
   'combined one-at-a-time paddle/Fn mask fails Moonlight log evidence'
 );
-[
-  'DualSense Edge paddle mappings are present, but SDL did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
-  'DualSense Edge paddle mapping update did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
-  'DualSense Edge paddle mapping add did not expose the expected paddle controller bindings (actual: paddle1=b20,paddle2=b19,paddle3=b18,paddle4=b17)',
-  'Ignoring DualSense Edge PADDLE1 event without verified paddle bindings',
-  'Ignoring DualSense Edge controller button a bound to raw paddle1:b20 as stale Edge raw alias',
-  'DualSense Edge controller button a is bound to raw paddle1:b20; not advertising it as a normal button',
-].forEach((stopLine) => {
+moonlightStopEvidenceSamples.forEach((stopLine) => {
   assertMoonlightLogEvidence(
     `${completeSdl2MoonlightLog}\n${stopLine}`,
     moonlightEvidenceVariants.sdl2,
@@ -551,6 +721,44 @@ assertMoonlightLogEvidence(
   moonlightEvidenceVariants.sdl2,
   false,
   'partial copied Moonlight log cannot satisfy complete evidence'
+);
+
+const moonlightEvidenceTemplate = makeMoonlightEvidenceTemplate();
+for (const expectedLine of completeSdl2MoonlightLog.split('\n')) {
+  assert(
+    moonlightEvidenceTemplate.includes(expectedLine),
+    `Moonlight evidence template must include native SDL2 evidence line: ${expectedLine}`
+  );
+}
+for (const expectedLine of completeSdl3MoonlightLog.split('\n')) {
+  assert(
+    moonlightEvidenceTemplate.includes(expectedLine),
+    `Moonlight evidence template must include sdl2-compat/SDL3 evidence line: ${expectedLine}`
+  );
+}
+assert(
+  moonlightEvidenceTemplate.includes(makeSdl3CompatFallbackDetectionLine()),
+  'Moonlight evidence template must include the sdl2-compat runtime-version fallback line'
+);
+for (const stopLine of moonlightStopEvidenceSamples) {
+  assert(
+    moonlightEvidenceTemplate.includes(stopLine),
+    `Moonlight evidence template must include stop diagnostic: ${stopLine}`
+  );
+}
+for (const mask of moonlightCombinedMaskSamples) {
+  assert(
+    moonlightEvidenceTemplate.includes(mask),
+    `Moonlight evidence template must call out combined mask ${mask}`
+  );
+}
+assert(
+  moonlightEvidenceTemplate.includes('SDL_LOGGING=application=debug'),
+  'Moonlight evidence template must include SDL application debug logging instructions'
+);
+assert(
+  moonlightEvidenceTemplate.includes('### Moonlight client evidence'),
+  'Moonlight evidence template must include a paste-ready PR evidence block'
 );
 
 function allPaddles(paddleButtons) {
@@ -597,4 +805,16 @@ function verifyMappingSet(paddleButtons, label) {
 verifyMappingSet(sdl2PaddleButtons, 'native SDL2');
 verifyMappingSet(sdl3CompatPaddleButtons, 'sdl2-compat/SDL3');
 
-console.log('DualSense Edge mapping verification passed.');
+if (cliOptions.writeEvidenceTemplatePath) {
+  const outputPath = path.resolve(process.cwd(), cliOptions.writeEvidenceTemplatePath);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, moonlightEvidenceTemplate);
+  console.log(`DualSense Edge Moonlight evidence template written to ${outputPath}`);
+}
+
+if (cliOptions.printEvidenceTemplate) {
+  process.stdout.write(moonlightEvidenceTemplate);
+}
+else {
+  console.log('DualSense Edge mapping verification passed.');
+}
