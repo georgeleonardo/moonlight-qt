@@ -211,7 +211,10 @@ function analyzeLldbLog(logText) {
   const missingPresses = expectedPaddlePresses.filter(([, mask]) => !observedMasks.has(mask));
   const allowedMasks = new Set([0, ...expectedPaddlePresses.map(([, mask]) => mask)]);
   const combinedMasks = multiLines.filter((line) => !allowedMasks.has(line.paddleMask));
-  const neutralCount = multiLines.filter((line) => line.paddleMask === 0).length;
+  const nonPaddleButtonLines = multiLines.filter((line) =>
+    line.paddleMask !== 0 && line.buttonFlags !== line.paddleMask
+  );
+  const neutralCount = multiLines.filter((line) => line.paddleMask === 0 && line.buttonFlags === 0).length;
 
   return {
     arrivalLines,
@@ -219,10 +222,12 @@ function analyzeLldbLog(logText) {
     validArrival,
     missingPresses,
     combinedMasks,
+    nonPaddleButtonLines,
     neutralCount,
     pass: Boolean(validArrival) &&
       missingPresses.length === 0 &&
       combinedMasks.length === 0 &&
+      nonPaddleButtonLines.length === 0 &&
       neutralCount >= expectedPaddlePresses.length,
   };
 }
@@ -247,6 +252,9 @@ function verifyLldbLog(logPath) {
     result.combinedMasks.length === 0
       ? 'PASS: no combined paddle/Fn masks during one-at-a-time validation'
       : `FAIL: combined paddle/Fn masks found: ${result.combinedMasks.map((line) => line.line.trim()).join(' | ')}`,
+    result.nonPaddleButtonLines.length === 0
+      ? 'PASS: no non-paddle button flags during one-at-a-time Edge validation'
+      : `FAIL: non-paddle button flags found during Edge validation: ${result.nonPaddleButtonLines.map((line) => line.line.trim()).join(' | ')}`,
     '',
     `overall=${result.pass ? 'PASS' : 'FAIL'}`,
   ];
@@ -287,6 +295,14 @@ function selfTest() {
   ].join('\n');
   const missingArrivalLldbLog = passingLldbLog.replace('type=2', 'type=0');
   const combinedMaskLldbLog = `${passingLldbLog}\nEDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00030000 paddleMask=0x00030000`;
+  const duplicateFaceButtonLldbLog = passingLldbLog.replace(
+    'buttonFlags=0x00010000 paddleMask=0x00010000',
+    'buttonFlags=0x00011000 paddleMask=0x00010000'
+  );
+  const dirtyNeutralReleaseLldbLog = passingLldbLog.replace(
+    'buttonFlags=0x00000000 paddleMask=0x00000000',
+    'buttonFlags=0x00001000 paddleMask=0x00000000'
+  );
 
   if (!analyzeLldbLog(passingLldbLog).pass) {
     fail('self-test expected sample LLDB breakpoint log to pass');
@@ -296,6 +312,12 @@ function selfTest() {
   }
   if (analyzeLldbLog(combinedMaskLldbLog).pass) {
     fail('self-test expected LLDB log with combined paddle mask to fail');
+  }
+  if (analyzeLldbLog(duplicateFaceButtonLldbLog).pass) {
+    fail('self-test expected LLDB log with duplicate face-button flag to fail');
+  }
+  if (analyzeLldbLog(dirtyNeutralReleaseLldbLog).pass) {
+    fail('self-test expected LLDB log with non-neutral release button flags to fail');
   }
 }
 

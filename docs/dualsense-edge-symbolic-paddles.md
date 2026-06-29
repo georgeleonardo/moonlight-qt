@@ -73,8 +73,9 @@ It auto-continues after printing values. Remove `--auto-continue true` from the
 helper if you need the debugger to stop at each call. Save the LLDB console
 output and run `--verify-lldb-log` against it; the verifier requires one valid
 PlayStation arrival with `paddleMask=0x000f0000`, one-at-a-time press masks for
-all four Edge controls, at least four neutral release masks, and no combined
-paddle/Fn masks.
+all four Edge controls, at least four fully neutral release masks, no combined
+paddle/Fn masks, and no extra non-paddle `buttonFlags` during the Edge
+one-at-a-time presses.
 
 On `LiSendControllerArrivalEvent()`, connect the physical DualSense Edge and
 check:
@@ -91,7 +92,10 @@ check the `buttonFlags` argument:
 - PADDLE4 / left Fn: `buttonFlags & 0x00080000`
 
 Each release should return the corresponding bit to zero before pressing the
-next control. If these checks pass in Moonlight, the remaining implementation
-work is host-side: Apollo must use the arrival paddle mask to select the
-DualSense Edge USB/IP path and then preserve those four bits in the virtual
-Edge input report.
+next control. The full `buttonFlags` value should equal the single expected
+paddle/Fn flag while that control is pressed and return to `0x00000000` on
+release; a face-button bit appearing at the same time is evidence of a duplicate
+or remap problem. If these checks pass in Moonlight, the remaining
+implementation work is host-side: Apollo must use the arrival paddle mask to
+select the DualSense Edge USB/IP path and then preserve those four bits in the
+virtual Edge input report.
