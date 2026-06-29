@@ -72,11 +72,12 @@ command source scripts/dualsense-edge-lldb-breakpoints.lldb
 It auto-continues after printing values. Remove `--auto-continue true` from the
 helper if you need the debugger to stop at each call. Save the LLDB console
 output and run `--verify-lldb-log` against it; the verifier requires one valid
-PlayStation arrival with `paddleMask=0x000f0000`, one-at-a-time press masks for
-all four Edge controls, the ordered `PADDLE1` press/release, `PADDLE2`
-press/release, `PADDLE3` press/release, then `PADDLE4` press/release sequence,
-at least four fully neutral release masks, no combined paddle/Fn masks, and no
-extra non-paddle `buttonFlags` during the Edge one-at-a-time presses.
+active-controller PlayStation arrival with `paddleMask=0x000f0000`,
+one-at-a-time press masks for all four Edge controls on that same controller,
+the ordered `PADDLE1` press/release, `PADDLE2` press/release, `PADDLE3`
+press/release, then `PADDLE4` press/release sequence, at least four fully
+neutral release masks, no combined paddle/Fn masks, and no extra non-paddle
+`buttonFlags` during the Edge one-at-a-time presses.
 
 On `LiSendControllerArrivalEvent()`, connect the physical DualSense Edge and
 check:

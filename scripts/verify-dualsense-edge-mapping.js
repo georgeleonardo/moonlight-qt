@@ -59,6 +59,13 @@ function formatMask(mask) {
   return `0x${mask.toString(16).padStart(8, '0')}`;
 }
 
+function controllerIsActive(controller, activeMask) {
+  return Number.isInteger(controller) &&
+    controller >= 0 &&
+    controller < 32 &&
+    (activeMask & (2 ** controller)) !== 0;
+}
+
 function extractButtonMap(gamepadSource) {
   const match = gamepadSource.match(/const\s+int\s+SdlInputHandler::k_ButtonMap\[\]\s*=\s*\{([\s\S]*?)\};/);
   if (!match) {
@@ -188,44 +195,62 @@ function analyzeLldbLog(logText) {
   const multiLines = [];
 
   for (const line of lines) {
-    const arrival = line.match(/\bEDGE_ARRIVAL\b.*\btype=(0x[0-9a-f]+|\d+)\b.*\bsupportedButtonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b.*\bpass=(0x[0-9a-f]+|\d+)\b/i);
+    const arrival = line.match(/\bEDGE_ARRIVAL\b.*\bcontroller=(0x[0-9a-f]+|\d+)\b.*\bactiveMask=(0x[0-9a-f]+|\d+)\b.*\btype=(0x[0-9a-f]+|\d+)\b.*\bsupportedButtonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b.*\bpass=(0x[0-9a-f]+|\d+)\b/i);
     if (arrival) {
+      const controller = parseInteger(arrival[1]);
+      const activeMask = parseInteger(arrival[2]);
       arrivalLines.push({
         line,
-        type: parseInteger(arrival[1]),
-        supportedButtonFlags: parseInteger(arrival[2]),
-        paddleMask: parseInteger(arrival[3]),
-        pass: parseInteger(arrival[4]) !== 0,
+        controller,
+        activeMask,
+        type: parseInteger(arrival[3]),
+        supportedButtonFlags: parseInteger(arrival[4]),
+        paddleMask: parseInteger(arrival[5]),
+        pass: parseInteger(arrival[6]) !== 0,
+        active: controllerIsActive(controller, activeMask),
       });
     }
 
-    const multi = line.match(/\bEDGE_MULTI\b.*\bbuttonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b/i);
+    const multi = line.match(/\bEDGE_MULTI\b.*\bcontroller=(0x[0-9a-f]+|\d+)\b.*\bactiveMask=(0x[0-9a-f]+|\d+)\b.*\bbuttonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b/i);
     if (multi) {
+      const controller = parseInteger(multi[1]);
+      const activeMask = parseInteger(multi[2]);
       multiLines.push({
         line,
-        buttonFlags: parseInteger(multi[1]),
-        paddleMask: parseInteger(multi[2]),
+        controller,
+        activeMask,
+        buttonFlags: parseInteger(multi[3]),
+        paddleMask: parseInteger(multi[4]),
+        active: controllerIsActive(controller, activeMask),
       });
     }
   }
 
   const validArrival = arrivalLines.find((arrival) =>
     arrival.pass &&
+    arrival.active &&
     arrival.type === 2 &&
     (arrival.supportedButtonFlags & edgePaddleMask) === edgePaddleMask &&
     arrival.paddleMask === edgePaddleMask
   );
-  const observedMasks = new Set(multiLines.map((line) => line.paddleMask));
+  const relevantMultiLines = validArrival
+    ? multiLines.filter((line) => line.controller === validArrival.controller)
+    : multiLines;
+  const ignoredMultiLines = validArrival
+    ? multiLines.filter((line) => line.controller !== validArrival.controller)
+    : [];
+  const inactiveMultiLines = relevantMultiLines.filter((line) => !line.active);
+  const observedMasks = new Set(relevantMultiLines.map((line) => line.paddleMask));
   const missingPresses = expectedPaddlePresses.filter(([, mask]) => !observedMasks.has(mask));
   const allowedMasks = new Set([0, ...expectedPaddlePresses.map(([, mask]) => mask)]);
-  const combinedMasks = multiLines.filter((line) => !allowedMasks.has(line.paddleMask));
-  const nonPaddleButtonLines = multiLines.filter((line) =>
+  const combinedMasks = relevantMultiLines.filter((line) => !allowedMasks.has(line.paddleMask));
+  const nonPaddleButtonLines = relevantMultiLines.filter((line) =>
     line.paddleMask !== 0 && line.buttonFlags !== line.paddleMask
   );
-  const neutralCount = multiLines.filter((line) => line.paddleMask === 0 && line.buttonFlags === 0).length;
+  const neutralCount = relevantMultiLines.filter((line) => line.paddleMask === 0 && line.buttonFlags === 0).length;
   let orderedSequenceIndex = 0;
   const orderedSequenceLines = [];
-  for (const line of multiLines) {
+  for (const line of relevantMultiLines) {
     const expectedStep = expectedOneAtATimeSequence[orderedSequenceIndex];
     if (!expectedStep) {
       break;
@@ -243,6 +268,9 @@ function analyzeLldbLog(logText) {
     arrivalLines,
     multiLines,
     validArrival,
+    relevantMultiLines,
+    ignoredMultiLines,
+    inactiveMultiLines,
     missingPresses,
     combinedMasks,
     nonPaddleButtonLines,
@@ -253,6 +281,7 @@ function analyzeLldbLog(logText) {
     pass: Boolean(validArrival) &&
       missingPresses.length === 0 &&
       orderedSequencePass &&
+      inactiveMultiLines.length === 0 &&
       combinedMasks.length === 0 &&
       nonPaddleButtonLines.length === 0 &&
       neutralCount >= expectedPaddlePresses.length,
@@ -266,8 +295,11 @@ function verifyLldbLog(logPath) {
     `Moonlight DualSense Edge LLDB breakpoint evidence: ${result.pass ? 'PASS' : 'FAIL'}`,
     `log_path=${logPath}`,
     result.validArrival
-      ? `PASS: arrival advertises LI_CTYPE_PS and paddle/Fn mask 0x000f0000: ${result.validArrival.line.trim()}`
-      : 'FAIL: no EDGE_ARRIVAL line proved type=2 and paddleMask=0x000f0000',
+      ? `PASS: active controller ${result.validArrival.controller} arrival advertises LI_CTYPE_PS and paddle/Fn mask 0x000f0000: ${result.validArrival.line.trim()}`
+      : 'FAIL: no EDGE_ARRIVAL line proved an active controller with type=2 and paddleMask=0x000f0000',
+    result.validArrival
+      ? `INFO: analyzed ${result.relevantMultiLines.length} EDGE_MULTI lines for controller ${result.validArrival.controller}; ignored ${result.ignoredMultiLines.length} lines from other controllers`
+      : `INFO: analyzed ${result.relevantMultiLines.length} EDGE_MULTI lines because no valid arrival selected a controller`,
     ...expectedPaddlePresses.map(([name, mask]) =>
       result.missingPresses.some(([, missingMask]) => missingMask === mask)
         ? `FAIL: missing one-at-a-time ${name} mask ${formatMask(mask)}`
@@ -279,6 +311,9 @@ function verifyLldbLog(logPath) {
     result.orderedSequencePass
       ? 'PASS: observed ordered PADDLE1-4 press/release sequence'
       : `FAIL: missing ordered one-at-a-time sequence step ${result.missingOrderedSequenceStep.name} buttonFlags=${formatMask(result.missingOrderedSequenceStep.buttonFlags)} paddleMask=${formatMask(result.missingOrderedSequenceStep.paddleMask)}`,
+    result.inactiveMultiLines.length === 0
+      ? 'PASS: all analyzed EDGE_MULTI lines belonged to an active controller slot'
+      : `FAIL: inactive controller EDGE_MULTI lines found: ${result.inactiveMultiLines.map((line) => line.line.trim()).join(' | ')}`,
     result.combinedMasks.length === 0
       ? 'PASS: no combined paddle/Fn masks during one-at-a-time validation'
       : `FAIL: combined paddle/Fn masks found: ${result.combinedMasks.map((line) => line.line.trim()).join(' | ')}`,
@@ -324,6 +359,7 @@ function selfTest() {
     'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
   ].join('\n');
   const missingArrivalLldbLog = passingLldbLog.replace('type=2', 'type=0');
+  const inactiveArrivalLldbLog = passingLldbLog.replace('activeMask=0x0001 type=2', 'activeMask=0x0000 type=2');
   const combinedMaskLldbLog = `${passingLldbLog}\nEDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00030000 paddleMask=0x00030000`;
   const duplicateFaceButtonLldbLog = passingLldbLog.replace(
     'buttonFlags=0x00010000 paddleMask=0x00010000',
@@ -344,12 +380,30 @@ function selfTest() {
     'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
     'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
   ].join('\n');
+  const mixedControllerLldbLog = [
+    'EDGE_ARRIVAL controller=0 activeMask=0x0001 type=2 supportedButtonFlags=0x003f0000 paddleMask=0x000f0000 pass=1',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00010000 paddleMask=0x00010000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00020000 paddleMask=0x00020000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00040000 paddleMask=0x00040000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00080000 paddleMask=0x00080000',
+    'EDGE_MULTI controller=1 activeMask=0x0002 buttonFlags=0x00000000 paddleMask=0x00000000',
+  ].join('\n');
+  const inactiveMultiLldbLog = passingLldbLog.replace(
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00010000 paddleMask=0x00010000',
+    'EDGE_MULTI controller=0 activeMask=0x0000 buttonFlags=0x00010000 paddleMask=0x00010000'
+  );
 
   if (!analyzeLldbLog(passingLldbLog).pass) {
     fail('self-test expected sample LLDB breakpoint log to pass');
   }
   if (analyzeLldbLog(missingArrivalLldbLog).pass) {
     fail('self-test expected LLDB log without PlayStation arrival to fail');
+  }
+  if (analyzeLldbLog(inactiveArrivalLldbLog).pass) {
+    fail('self-test expected LLDB log with inactive arrival controller to fail');
   }
   if (analyzeLldbLog(combinedMaskLldbLog).pass) {
     fail('self-test expected LLDB log with combined paddle mask to fail');
@@ -362,6 +416,12 @@ function selfTest() {
   }
   if (analyzeLldbLog(unorderedLldbLog).pass) {
     fail('self-test expected LLDB log with unordered press/release evidence to fail');
+  }
+  if (analyzeLldbLog(mixedControllerLldbLog).pass) {
+    fail('self-test expected LLDB log mixing arrival and button evidence across controllers to fail');
+  }
+  if (analyzeLldbLog(inactiveMultiLldbLog).pass) {
+    fail('self-test expected LLDB log with inactive multi-controller evidence to fail');
   }
 }
 
