@@ -17,6 +17,10 @@ const expectedPaddlePresses = [
   ['PADDLE3/SDL right secondary paddle/right Fn', 0x00040000],
   ['PADDLE4/SDL left secondary paddle/left Fn', 0x00080000],
 ];
+const expectedOneAtATimeSequence = expectedPaddlePresses.flatMap(([name, mask]) => [
+  { name, buttonFlags: mask, paddleMask: mask },
+  { name: `neutral release after ${name}`, buttonFlags: 0, paddleMask: 0 },
+]);
 
 function fail(message) {
   console.error(`DualSense Edge symbolic paddle verification failed: ${message}`);
@@ -49,6 +53,10 @@ function readFileOrFail(filePath, label) {
 function parseInteger(value) {
   const normalized = value.toLowerCase();
   return Number.parseInt(normalized, normalized.startsWith('0x') ? 16 : 10);
+}
+
+function formatMask(mask) {
+  return `0x${mask.toString(16).padStart(8, '0')}`;
 }
 
 function extractButtonMap(gamepadSource) {
@@ -215,6 +223,21 @@ function analyzeLldbLog(logText) {
     line.paddleMask !== 0 && line.buttonFlags !== line.paddleMask
   );
   const neutralCount = multiLines.filter((line) => line.paddleMask === 0 && line.buttonFlags === 0).length;
+  let orderedSequenceIndex = 0;
+  const orderedSequenceLines = [];
+  for (const line of multiLines) {
+    const expectedStep = expectedOneAtATimeSequence[orderedSequenceIndex];
+    if (!expectedStep) {
+      break;
+    }
+
+    if (line.buttonFlags === expectedStep.buttonFlags && line.paddleMask === expectedStep.paddleMask) {
+      orderedSequenceLines.push(line);
+      orderedSequenceIndex++;
+    }
+  }
+  const missingOrderedSequenceStep = expectedOneAtATimeSequence[orderedSequenceIndex] || null;
+  const orderedSequencePass = orderedSequenceIndex === expectedOneAtATimeSequence.length;
 
   return {
     arrivalLines,
@@ -224,8 +247,12 @@ function analyzeLldbLog(logText) {
     combinedMasks,
     nonPaddleButtonLines,
     neutralCount,
+    orderedSequenceLines,
+    missingOrderedSequenceStep,
+    orderedSequencePass,
     pass: Boolean(validArrival) &&
       missingPresses.length === 0 &&
+      orderedSequencePass &&
       combinedMasks.length === 0 &&
       nonPaddleButtonLines.length === 0 &&
       neutralCount >= expectedPaddlePresses.length,
@@ -243,12 +270,15 @@ function verifyLldbLog(logPath) {
       : 'FAIL: no EDGE_ARRIVAL line proved type=2 and paddleMask=0x000f0000',
     ...expectedPaddlePresses.map(([name, mask]) =>
       result.missingPresses.some(([, missingMask]) => missingMask === mask)
-        ? `FAIL: missing one-at-a-time ${name} mask 0x${mask.toString(16).padStart(8, '0')}`
-        : `PASS: observed one-at-a-time ${name} mask 0x${mask.toString(16).padStart(8, '0')}`
+        ? `FAIL: missing one-at-a-time ${name} mask ${formatMask(mask)}`
+        : `PASS: observed one-at-a-time ${name} mask ${formatMask(mask)}`
     ),
     result.neutralCount >= expectedPaddlePresses.length
       ? `PASS: observed ${result.neutralCount} neutral paddle/Fn releases`
       : `FAIL: observed ${result.neutralCount} neutral paddle/Fn releases; expected at least ${expectedPaddlePresses.length}`,
+    result.orderedSequencePass
+      ? 'PASS: observed ordered PADDLE1-4 press/release sequence'
+      : `FAIL: missing ordered one-at-a-time sequence step ${result.missingOrderedSequenceStep.name} buttonFlags=${formatMask(result.missingOrderedSequenceStep.buttonFlags)} paddleMask=${formatMask(result.missingOrderedSequenceStep.paddleMask)}`,
     result.combinedMasks.length === 0
       ? 'PASS: no combined paddle/Fn masks during one-at-a-time validation'
       : `FAIL: combined paddle/Fn masks found: ${result.combinedMasks.map((line) => line.line.trim()).join(' | ')}`,
@@ -303,6 +333,17 @@ function selfTest() {
     'buttonFlags=0x00000000 paddleMask=0x00000000',
     'buttonFlags=0x00001000 paddleMask=0x00000000'
   );
+  const unorderedLldbLog = [
+    'EDGE_ARRIVAL controller=0 activeMask=0x0001 type=2 supportedButtonFlags=0x003f0000 paddleMask=0x000f0000 pass=1',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00010000 paddleMask=0x00010000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00020000 paddleMask=0x00020000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00040000 paddleMask=0x00040000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00080000 paddleMask=0x00080000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+  ].join('\n');
 
   if (!analyzeLldbLog(passingLldbLog).pass) {
     fail('self-test expected sample LLDB breakpoint log to pass');
@@ -318,6 +359,9 @@ function selfTest() {
   }
   if (analyzeLldbLog(dirtyNeutralReleaseLldbLog).pass) {
     fail('self-test expected LLDB log with non-neutral release button flags to fail');
+  }
+  if (analyzeLldbLog(unorderedLldbLog).pass) {
+    fail('self-test expected LLDB log with unordered press/release evidence to fail');
   }
 }
 
