@@ -26,6 +26,13 @@ mapping patch as long as SDL exposes the Edge controls as symbolic
 indices are an SDL implementation detail once the symbolic button mapping is
 correct.
 
+Maintainer feedback on `moonlight-stream/moonlight-qt#1922` confirmed this
+direction: the symbolic SDL paddle mappings are the supported Moonlight path,
+and the useful client-side validation is to breakpoint
+`LiSendControllerArrivalEvent()` and `LiSendMultiControllerEvent()` to confirm
+the arrival paddle mask and per-button state transitions. If those checks pass,
+the remaining implementation work is host-side.
+
 Use the local verifier for private validation:
 
 ```bash
