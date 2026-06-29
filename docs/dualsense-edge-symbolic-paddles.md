@@ -39,6 +39,7 @@ Use the local verifier for private validation:
 node scripts/verify-dualsense-edge-mapping.js
 node scripts/verify-dualsense-edge-mapping.js --self-test
 node scripts/verify-dualsense-edge-mapping.js --verify-log /path/to/Moonlight.log
+node scripts/verify-dualsense-edge-mapping.js --verify-lldb-log /path/to/lldb-transcript.log
 ```
 
 The log verifier expects Moonlight's existing gamepad mapping log line to show
@@ -53,14 +54,19 @@ For a hardware run, put breakpoints on:
 - `LiSendControllerArrivalEvent()`
 - `LiSendMultiControllerEvent()`
 
-The helper command file sets both breakpoints and prints the relevant arguments:
+The helper command file sets both breakpoints and prints the relevant arguments
+plus stable `EDGE_ARRIVAL` and `EDGE_MULTI` lines for transcript verification:
 
 ```lldb
 command source scripts/dualsense-edge-lldb-breakpoints.lldb
 ```
 
 It auto-continues after printing values. Remove `--auto-continue true` from the
-helper if you need the debugger to stop at each call.
+helper if you need the debugger to stop at each call. Save the LLDB console
+output and run `--verify-lldb-log` against it; the verifier requires one valid
+PlayStation arrival with `paddleMask=0x000f0000`, one-at-a-time press masks for
+all four Edge controls, at least four neutral release masks, and no combined
+paddle/Fn masks.
 
 On `LiSendControllerArrivalEvent()`, connect the physical DualSense Edge and
 check:

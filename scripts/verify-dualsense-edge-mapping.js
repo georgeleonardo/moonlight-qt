@@ -10,6 +10,13 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
+const edgePaddleMask = 0x000f0000;
+const expectedPaddlePresses = [
+  ['PADDLE1/right rear', 0x00010000],
+  ['PADDLE2/left rear', 0x00020000],
+  ['PADDLE3/right Fn', 0x00040000],
+  ['PADDLE4/left Fn', 0x00080000],
+];
 
 function fail(message) {
   console.error(`DualSense Edge symbolic paddle verification failed: ${message}`);
@@ -29,6 +36,19 @@ function assertMatch(content, pattern, message) {
   if (!pattern.test(content)) {
     fail(message);
   }
+}
+
+function readFileOrFail(filePath, label) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    fail(`unable to read ${label} ${filePath}: ${err.message}`);
+  }
+}
+
+function parseInteger(value) {
+  const normalized = value.toLowerCase();
+  return Number.parseInt(normalized, normalized.startsWith('0x') ? 16 : 10);
 }
 
 function extractButtonMap(gamepadSource) {
@@ -107,12 +127,12 @@ function assertSourceLayout() {
   );
   assertMatch(
     lldbBreakpoints,
-    /breakpoint\s+set\s+--name\s+LiSendControllerArrivalEvent[\s\S]*supportedButtonFlags[\s\S]*0x000f0000/,
+    /breakpoint\s+set\s+--name\s+LiSendControllerArrivalEvent[\s\S]*EDGE_ARRIVAL[\s\S]*supportedButtonFlags[\s\S]*0x000f0000/,
     'LLDB validation helper must inspect controller-arrival supportedButtonFlags'
   );
   assertMatch(
     lldbBreakpoints,
-    /breakpoint\s+set\s+--name\s+LiSendMultiControllerEvent[\s\S]*buttonFlags[\s\S]*0x000f0000/,
+    /breakpoint\s+set\s+--name\s+LiSendMultiControllerEvent[\s\S]*EDGE_MULTI[\s\S]*buttonFlags[\s\S]*0x000f0000/,
     'LLDB validation helper must inspect multi-controller buttonFlags'
   );
 }
@@ -133,13 +153,7 @@ function analyzeLog(logText) {
 }
 
 function verifyLog(logPath) {
-  let logText;
-  try {
-    logText = fs.readFileSync(logPath, 'utf8');
-  } catch (err) {
-    fail(`unable to read log ${logPath}: ${err.message}`);
-  }
-
+  const logText = readFileOrFail(logPath, 'log');
   const result = analyzeLog(logText);
   const report = [
     `Moonlight DualSense Edge symbolic paddle evidence: ${result.pass ? 'PASS' : 'FAIL'}`,
@@ -150,6 +164,89 @@ function verifyLog(logPath) {
     result.noMappingLines.length === 0
       ? 'PASS: no missing SDL controller button mapping diagnostics for PADDLE1-4 indices'
       : `FAIL: missing SDL controller button mapping diagnostics found: ${result.noMappingLines.join(' | ')}`,
+    '',
+    `overall=${result.pass ? 'PASS' : 'FAIL'}`,
+  ];
+
+  console.log(report.join('\n'));
+  if (!result.pass) {
+    process.exit(1);
+  }
+}
+
+function analyzeLldbLog(logText) {
+  const lines = logText.split(/\r?\n/);
+  const arrivalLines = [];
+  const multiLines = [];
+
+  for (const line of lines) {
+    const arrival = line.match(/\bEDGE_ARRIVAL\b.*\btype=(0x[0-9a-f]+|\d+)\b.*\bsupportedButtonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b.*\bpass=(0x[0-9a-f]+|\d+)\b/i);
+    if (arrival) {
+      arrivalLines.push({
+        line,
+        type: parseInteger(arrival[1]),
+        supportedButtonFlags: parseInteger(arrival[2]),
+        paddleMask: parseInteger(arrival[3]),
+        pass: parseInteger(arrival[4]) !== 0,
+      });
+    }
+
+    const multi = line.match(/\bEDGE_MULTI\b.*\bbuttonFlags=(0x[0-9a-f]+|\d+)\b.*\bpaddleMask=(0x[0-9a-f]+|\d+)\b/i);
+    if (multi) {
+      multiLines.push({
+        line,
+        buttonFlags: parseInteger(multi[1]),
+        paddleMask: parseInteger(multi[2]),
+      });
+    }
+  }
+
+  const validArrival = arrivalLines.find((arrival) =>
+    arrival.pass &&
+    arrival.type === 2 &&
+    (arrival.supportedButtonFlags & edgePaddleMask) === edgePaddleMask &&
+    arrival.paddleMask === edgePaddleMask
+  );
+  const observedMasks = new Set(multiLines.map((line) => line.paddleMask));
+  const missingPresses = expectedPaddlePresses.filter(([, mask]) => !observedMasks.has(mask));
+  const allowedMasks = new Set([0, ...expectedPaddlePresses.map(([, mask]) => mask)]);
+  const combinedMasks = multiLines.filter((line) => !allowedMasks.has(line.paddleMask));
+  const neutralCount = multiLines.filter((line) => line.paddleMask === 0).length;
+
+  return {
+    arrivalLines,
+    multiLines,
+    validArrival,
+    missingPresses,
+    combinedMasks,
+    neutralCount,
+    pass: Boolean(validArrival) &&
+      missingPresses.length === 0 &&
+      combinedMasks.length === 0 &&
+      neutralCount >= expectedPaddlePresses.length,
+  };
+}
+
+function verifyLldbLog(logPath) {
+  const logText = readFileOrFail(logPath, 'LLDB log');
+  const result = analyzeLldbLog(logText);
+  const report = [
+    `Moonlight DualSense Edge LLDB breakpoint evidence: ${result.pass ? 'PASS' : 'FAIL'}`,
+    `log_path=${logPath}`,
+    result.validArrival
+      ? `PASS: arrival advertises LI_CTYPE_PS and paddle/Fn mask 0x000f0000: ${result.validArrival.line.trim()}`
+      : 'FAIL: no EDGE_ARRIVAL line proved type=2 and paddleMask=0x000f0000',
+    ...expectedPaddlePresses.map(([name, mask]) =>
+      result.missingPresses.some(([, missingMask]) => missingMask === mask)
+        ? `FAIL: missing one-at-a-time ${name} mask 0x${mask.toString(16).padStart(8, '0')}`
+        : `PASS: observed one-at-a-time ${name} mask 0x${mask.toString(16).padStart(8, '0')}`
+    ),
+    result.neutralCount >= expectedPaddlePresses.length
+      ? `PASS: observed ${result.neutralCount} neutral paddle/Fn releases`
+      : `FAIL: observed ${result.neutralCount} neutral paddle/Fn releases; expected at least ${expectedPaddlePresses.length}`,
+    result.combinedMasks.length === 0
+      ? 'PASS: no combined paddle/Fn masks during one-at-a-time validation'
+      : `FAIL: combined paddle/Fn masks found: ${result.combinedMasks.map((line) => line.line.trim()).join(' | ')}`,
     '',
     `overall=${result.pass ? 'PASS' : 'FAIL'}`,
   ];
@@ -176,6 +273,30 @@ function selfTest() {
   if (analyzeLog(missingMappingLog).pass) {
     fail('self-test expected missing paddle controller-button diagnostic to fail');
   }
+
+  const passingLldbLog = [
+    'EDGE_ARRIVAL controller=0 activeMask=0x0001 type=2 supportedButtonFlags=0x003f0000 paddleMask=0x000f0000 pass=1',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00010000 paddleMask=0x00010000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00020000 paddleMask=0x00020000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00040000 paddleMask=0x00040000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00080000 paddleMask=0x00080000',
+    'EDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00000000 paddleMask=0x00000000',
+  ].join('\n');
+  const missingArrivalLldbLog = passingLldbLog.replace('type=2', 'type=0');
+  const combinedMaskLldbLog = `${passingLldbLog}\nEDGE_MULTI controller=0 activeMask=0x0001 buttonFlags=0x00030000 paddleMask=0x00030000`;
+
+  if (!analyzeLldbLog(passingLldbLog).pass) {
+    fail('self-test expected sample LLDB breakpoint log to pass');
+  }
+  if (analyzeLldbLog(missingArrivalLldbLog).pass) {
+    fail('self-test expected LLDB log without PlayStation arrival to fail');
+  }
+  if (analyzeLldbLog(combinedMaskLldbLog).pass) {
+    fail('self-test expected LLDB log with combined paddle mask to fail');
+  }
 }
 
 const args = process.argv.slice(2);
@@ -184,10 +305,12 @@ if (args.length === 0) {
   console.log('DualSense Edge symbolic paddle verification passed.');
 } else if (args[0] === '--verify-log' && args[1]) {
   verifyLog(args[1]);
+} else if (args[0] === '--verify-lldb-log' && args[1]) {
+  verifyLldbLog(args[1]);
 } else if (args[0] === '--self-test') {
   selfTest();
   console.log('DualSense Edge symbolic paddle self-test passed.');
 } else {
-  console.error('Usage: node scripts/verify-dualsense-edge-mapping.js [--self-test | --verify-log <moonlight.log>]');
+  console.error('Usage: node scripts/verify-dualsense-edge-mapping.js [--self-test | --verify-log <moonlight.log> | --verify-lldb-log <lldb.log>]');
   process.exit(2);
 }
