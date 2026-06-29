@@ -412,6 +412,9 @@ function formatMoonlightLogEvidenceReport(report, logPath) {
     lines.push(`complete=${passFail(variant.complete)}`);
   }
 
+  lines.push('');
+  lines.push(`overall=${passFail(report.pass)}`);
+
   return lines.join('\n') + '\n';
 }
 
@@ -737,6 +740,14 @@ assert(
 assert(
   !moonlightLogEvidenceReport(completeSdl2MoonlightLog.split('\n').slice(0, 2).join('\n')).pass,
   'partial copied Moonlight evidence report must fail'
+);
+assert(
+  /overall=PASS\n$/.test(formatMoonlightLogEvidenceReport(moonlightLogEvidenceReport(completeSdl2MoonlightLog), '/tmp/moonlight.log')),
+  'passing Moonlight evidence report must end with overall=PASS'
+);
+assert(
+  /overall=FAIL\n$/.test(formatMoonlightLogEvidenceReport(moonlightLogEvidenceReport(completeSdl2MoonlightLog.split('\n').slice(0, 2).join('\n')), '/tmp/moonlight.log')),
+  'failing Moonlight evidence report must end with overall=FAIL'
 );
 assertMoonlightLogEvidence(
   completeSdl3FallbackMoonlightLog,
