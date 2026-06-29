@@ -12,10 +12,10 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 const edgePaddleMask = 0x000f0000;
 const expectedPaddlePresses = [
-  ['PADDLE1/right rear', 0x00010000],
-  ['PADDLE2/left rear', 0x00020000],
-  ['PADDLE3/right Fn', 0x00040000],
-  ['PADDLE4/left Fn', 0x00080000],
+  ['PADDLE1/SDL right primary paddle', 0x00010000],
+  ['PADDLE2/SDL left primary paddle', 0x00020000],
+  ['PADDLE3/SDL right secondary paddle/right Fn', 0x00040000],
+  ['PADDLE4/SDL left secondary paddle/left Fn', 0x00080000],
 ];
 
 function fail(message) {

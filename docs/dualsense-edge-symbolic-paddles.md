@@ -13,6 +13,14 @@ Moonlight already maps SDL controller buttons into Sunshine button flags through
 - `SDL_CONTROLLER_BUTTON_PADDLE3` -> `PADDLE3_FLAG` (`0x040000`)
 - `SDL_CONTROLLER_BUTTON_PADDLE4` -> `PADDLE4_FLAG` (`0x080000`)
 
+Under sdl2-compat/SDL3, those symbols correspond to
+`SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1`, `SDL_GAMEPAD_BUTTON_LEFT_PADDLE1`,
+`SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2`, and
+`SDL_GAMEPAD_BUTTON_LEFT_PADDLE2`. SDL3 documents the DualSense Edge examples
+for that order as right primary paddle, left primary paddle, right Fn, and left
+Fn. Raw HIDAPI button indices can still differ between SDL2 and SDL3, so the
+symbolic SDL button identity is the part Moonlight should preserve.
+
 The same `k_ButtonMap` is used in two places:
 
 - Button events set and clear `state->buttons`, so paddle presses travel in the
