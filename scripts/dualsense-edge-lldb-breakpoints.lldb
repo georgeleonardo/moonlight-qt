@@ -1,0 +1,11 @@
+# Source this file in an LLDB session attached to a debug Moonlight build:
+#
+#   command source scripts/dualsense-edge-lldb-breakpoints.lldb
+#
+# The breakpoints auto-continue after printing the values needed to validate
+# DualSense Edge symbolic paddle transport. Remove "--auto-continue true" if you
+# want LLDB to stop so you can inspect surrounding state manually.
+
+breakpoint set --name LiSendControllerArrivalEvent --auto-continue true --command "frame variable controllerNumber activeGamepadMask type supportedButtonFlags capabilities" --command "expression -- (unsigned int)(supportedButtonFlags & 0x000f0000)" --command "expression -- (type == 2) && ((supportedButtonFlags & 0x000f0000) == 0x000f0000)"
+
+breakpoint set --name LiSendMultiControllerEvent --auto-continue true --command "frame variable controllerNumber activeGamepadMask buttonFlags" --command "expression -- (unsigned int)(buttonFlags & 0x000f0000)"

@@ -62,6 +62,7 @@ function assertSourceLayout() {
   const gamepadSource = readText('app/streaming/input/gamepad.cpp');
   const limelightHeader = readText('moonlight-common-c/moonlight-common-c/src/Limelight.h');
   const inputStreamSource = readText('moonlight-common-c/moonlight-common-c/src/InputStream.c');
+  const lldbBreakpoints = readText('scripts/dualsense-edge-lldb-breakpoints.lldb');
 
   assertButtonMapIncludesSymbolicPaddles(gamepadSource);
 
@@ -103,6 +104,16 @@ function assertSourceLayout() {
     inputStreamSource,
     /holder->packet\.controllerArrival\.supportedButtonFlags\s*=\s*LE32\(supportedButtonFlags\);/,
     'Moonlight common must serialize controller-arrival supportedButtonFlags'
+  );
+  assertMatch(
+    lldbBreakpoints,
+    /breakpoint\s+set\s+--name\s+LiSendControllerArrivalEvent[\s\S]*supportedButtonFlags[\s\S]*0x000f0000/,
+    'LLDB validation helper must inspect controller-arrival supportedButtonFlags'
+  );
+  assertMatch(
+    lldbBreakpoints,
+    /breakpoint\s+set\s+--name\s+LiSendMultiControllerEvent[\s\S]*buttonFlags[\s\S]*0x000f0000/,
+    'LLDB validation helper must inspect multi-controller buttonFlags'
   );
 }
 

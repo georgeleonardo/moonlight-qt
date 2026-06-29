@@ -53,6 +53,15 @@ For a hardware run, put breakpoints on:
 - `LiSendControllerArrivalEvent()`
 - `LiSendMultiControllerEvent()`
 
+The helper command file sets both breakpoints and prints the relevant arguments:
+
+```lldb
+command source scripts/dualsense-edge-lldb-breakpoints.lldb
+```
+
+It auto-continues after printing values. Remove `--auto-continue true` from the
+helper if you need the debugger to stop at each call.
+
 On `LiSendControllerArrivalEvent()`, connect the physical DualSense Edge and
 check:
 
